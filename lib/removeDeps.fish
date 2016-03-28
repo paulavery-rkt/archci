@@ -1,5 +1,5 @@
 function removeDeps
-	if not test -z (pacman -Qtdr $BUILDDIR/rootfs)
-		pacman --noconfirm -r $BUILDDIR/rootfs -Rns (pacman -Qtdr $BUILDDIR/rootfs)
+	if not test -z (pacman -Qtdqr $BUILDDIR/rootfs)
+		pacman --noconfirm -r $BUILDDIR/rootfs -Rns (pacman -Qtdqr $BUILDDIR/rootfs)
 	end
 end
