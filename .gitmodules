@@ -1,0 +1,3 @@
+[submodule "chips"]
+	path = chips
+	url = git@github.com:PaulAvery/fish-n-chips.git

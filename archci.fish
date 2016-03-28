@@ -1,249 +1,75 @@
 #!/usr/bin/env fish
 
-# Include the sx if we installed from aur
-set PATH '/usr/lib/archci/node_modules/.bin' $PATH
-set VERBOSE false
-set JUSTHELPED false
-set UNPRIVUSER $USER
-
-function printUsage
-	set JUSTHELPED true
-
-	echo
-	echo 'Usage:'
-	echo
-	echo '  archci.fish SRCDIR TRGDIR'
-	echo
-	echo 'Takes a source directory and according to the files living within it creates an app container image. For full information on the format of the source directory, read the README.md'
-	echo
-	echo 'Flags:'
-	echo '  -h|--help'
-	echo '      Show this help'
-	echo
-	echo '  -v|--verbose'
-	echo '      Print more output'
-	echo
-
-	exit $argv[1]
-end
-
-# Abort after printing all messages
-function abort
-	echo $argv[1]
-
-	exit 1
-end
-
-# Run a command silently if required and print progress
-function run
-	set action $argv[1]
-	set cmd $argv[2..-1]
-	set padding (math (tput cols) - 7)
-	set error (mktemp)
-
-	printf "\r\033[K%-"$padding"s %s" $action "[....]"
-
-	if test "$VERBOSE" = true
-		eval $cmd
-	else
-		eval $cmd > /dev/null ^ $error
-	end
-
-	if test "$status" = 0
-		printf "\r\033[K%-"$padding"s %s\n" $action "["(set_color green)" OK "(set_color normal)"]"
-	else
-		printf "\r\033[K%-"$padding"s %s\n" $action "["(set_color red)"FAIL"(set_color normal)"]"
-
-		echo
-		cat $error
-
-		exit 1
-	end
-end
-
-# Cleanup once the script exits
-function cleanup --on-process %self
-	if test "$JUSTHELPED" != true
-		echo
-		echo "Cleaning Up"
-
-		# Clean up pre script if neccessary
-		if test "$PRERUN" = true -a "$POSTRUN" = false
-			runPostScript
-		end
-
-		# Clean up remaining folders
-		rm -rf $BUILDDIR
-		rm -rf $AURDIR
-		rm -rf $AURBUILDDIR
-
-		echo 'Done'
-	end
-end
-
 # Exit immediately if a command is not found
 function notfound --on-event fish_command_not_found
 	abort 'Command Not Found'
 end
 
-function validateManifest
-	test -f "$MANIFEST"
-	and actool validate $MANIFEST
+# Load fish-n-chips library
+set chipsPwd (dirname -- (realpath -- (status -f)))
+source $chipsPwd/chips/chips.fish $argv; or exit $status
+
+# Include the sx if we installed from aur
+set PATH $chipsPwd/node_modules/.bin $PATH
+
+# Load all our functions
+for f in $chipsPwd/lib/*
+	source $f
 end
 
-function extractLabels
-	# Extract labels from manifest
-	set -g MOS (sx -jxi $MANIFEST x.labels | sx -jxlf "x.name==='os'" | sx -jx x.value)
-	and set -g MARCH (sx -jxi $MANIFEST x.labels | sx -jxlf "x.name==='arch'" | sx -jx x.value)
-	and set -g MNAME (sx -jxi $MANIFEST 'x.name.split("/")[1]')
-	and set -g MVERSION (sx -jxi $MANIFEST x.labels | sx -jxlf "x.name==='version'" | sx -jx x.value)
-	and set -g MUSER (sx -jxi $MANIFEST x.app.user)
-	and set -g MGROUP (sx -jxi $MANIFEST x.app.group)
+# Set up fish-n-chips
+name        archci
+version     1.0.0
+author      Florian Albertz
+copyright   2016
 
-	# If we have no version in the manifest and no installed packages, abort
-	and if test -z "$MVERSION" -a ! -f "$ARCH" -a ! -f "$AUR"
-		abort 'No version in manifest and no aur/arch packages!'
-	end
-end
+info        'Script to create AppContainer Images from Arch Linux packages (Repo or Aur)'
+synopsis    'archci [OPTIONS] SRCDIR TRGDIR'
+description 'Takes a source directory and according to the files living within, it creates an app container image. For full information on the format of the source directory, read the README.md/manpage'
 
-function bootstrapRootFS
-	mkdir -pm 755 $BUILDDIR/rootfs
-	and pacstrap -cdGM $BUILDDIR/rootfs filesystem
-end
+argument    '-V | --version        Print version information'
+argument    '-h | --help           Show help page'
+argument    '-v | --verbose        Print more information'
+argument    '-u | --user    [user] User to run pacaur/makepkg as'
 
-function runPreScript
-	if test -f "$PRESCRIPT"
-		. $PRESCRIPT $BUILDDIR/rootfs
-		and set -g PRERUN true
-	end
-end
+arg -V printVersion; and exit
+arg -h help internal; and exit
 
-function installDepsArch
-	if test -f "$ARCHBUILD"
-		pacman --asdeps --noconfirm -r $BUILDDIR/rootfs -S (cat $ARCHBUILD)
-	end
-end
-
-function installDepsAur
-	if test -f "$AURBUILD"
-		# Only make the packages with pacaur, then install them with pacman
-		env PKGDEST=$AURBUILDDIR runuser -u $UNPRIVUSER -- pacaur --noconfirm --noedit --foreign -m (cat $AURBUILD)
-		and pacman -r $BUILDDIR/rootfs --asdeps --noconfirm -U $AURBUILDDIR/*
-	end
-end
-
-function installArch
-	if test -f "$ARCH"
-		pacman --noconfirm --asexplicit -r $BUILDDIR/rootfs -S (cat $ARCH)
-	end
-end
-
-function installAur
-	if test -f "$AUR"
-		# Only make the packages with pacaur, then install them with pacman
-		env "PKGDEST=$AURDIR" runuser -u $UNPRIVUSER -- pacaur --noconfirm --noedit --foreign -m (cat $AUR)
-		and pacman -r $BUILDDIR/rootfs --asexplicit --noconfirm -U $AURDIR/*
-	end
-end
-
-function copyRootFS
-	if test -d "$ROOTFS"
-		cp -rpf $ROOTFS $BUILDDIR
-	end
-end
-
-function runBuildScript
-	if test -f "$BUILDSCRIPT"
-		cp $BUILDSCRIPT $BUILDDIR/rootfs/build
-		and chroot $BUILDDIR/rootfs /build
-		and rm -rf $BUILDDIR/rootfs/build
-	end
-end
-
-function runPostScript
-	if test -f "$POSTSCRIPT"
-		. $POSTSCRIPT $BUILDDIR/rootfs
-		and set -g POSTRUN true
-	end
-end
-
-function removeDeps
-	if not test -z (pacman -Qtdqr $BUILDDIR/rootfs)
-		pacman --noconfirm -r $BUILDDIR/rootfs -Rns (pacman -Qtdqr $BUILDDIR/rootfs)
-	end
-end
-
-function copyManifest
-	# Extract user and group ids from rootfs
-	set NMUSER (cat $BUILDDIR/rootfs/etc/passwd | grep "^$MUSER:" | cut -d: -f3)
-	set NMGROUP (cat $BUILDDIR/rootfs/etc/group | grep "^$MGROUP:" | cut -d: -f3)
-
-	# If we have no version, load it from the first installed package
-	if test -z "$MVERSION"
-		if test -f "$AUR"
-			set -g MVERSION (pacman -r $BUILDDIR/rootfs -Q (head -1 $AUR) | sed 's/[^ ]* //')
-		else
-			set -g MVERSION (pacman -r $BUILDDIR/rootfs -Q (head -1 $ARCH) | sed 's/[^ ]* //')
-		end
-	end
-
-	# Copy and patch the manifest
-	cp "$MANIFEST" "$BUILDDIR/manifest"
-
-	if not test -z "$MVERSION"
-		# Patch in the new version
-		sx -jxpF $BUILDDIR/manifest "x.labels.push({'name':'version', 'value':'$MVERSION'}); x"
-	end
-
-	# Patch in the resolved or group if available
-	sx -jxpF $BUILDDIR/manifest "x.app.user = '$NMUSER' || '$MUSER'; x"
-	sx -jxpF $BUILDDIR/manifest "x.app.group = '$NMGROUP' || '$MGROUP'; x"
-end
-
-function buildACI
-	# Combine infos into ACI name
-	set ACI "$TRGDIR/images/$MOS/$MARCH/$MNAME-$MVERSION.aci"
-	mkdir -p (dirname "$ACI")
-
-	# Build the aci
-	and actool build $BUILDDIR $ACI
-
-	# Generate Signature
-	and chown -R $UNPRIVUSER $TRGDIR
-	and runuser -u $UNPRIVUSER -- gpg --armor --output $ACI.asc --detach-sig $ACI
-	and chown -R $USER $TRGDIR
-end
-
-# Parse arguments
-for arg in $argv
-	switch $arg
-		case -h --help
-			printUsage
-		case -v --verbose
-			set -g VERBOSE true
-	end
-end
-
-# Check user, we cannot run if we are not run with sudo
-if test "$USER" = root -a ! -z "$SUDO_USER"
-	set UNPRIVUSER $SUDO_USER
+# Set and check directories
+if not set -g SRCDIR (restArg 1)
+	abort "Source Directory not provided"
 else
-	abort 'Has to be run via sudo'
+	if not test -d $SRCDIR
+		abort "Source Directory not found"
+	else
+		set SRCDIR (realpath -- $SRCDIR)
+	end
 end
 
-set SRCDIR (realpath $argv[-2])
-set TRGDIR (realpath $argv[-1])
-
-# Validate Input
-if not test -d "$SRCDIR" -a -d "$TRGDIR"
-	echo "Source or Target Directory not found!"
-	echo
-
-	printUsage 1
+if not set -g TRGDIR (restArg 2)
+	abort "Target Directory not provided"
+else
+	if not test -d $TRGDIR
+		abort "Target Directory not found"
+	else
+		set TRGDIR (realpath -- $TRGDIR)
+	end
 end
 
+# Check user, we cannot run if we do not have an unpriviliged user and run as root
+if test "$USER" = root
+	set UNPRIVUSER (stern (arg -u) $SUDO_USER)
 
-# Prepare everything
+	if test -z $UNPRIVUSER
+		abort 'Has to be run via sudo or a user has to be passed via -u'
+	else if not getent passwd $UNPRIVUSER > /dev/null
+		abort "User $UNPRIVUSER does not exist!"
+	end
+else
+	abort 'Has to be run as root'
+end
+
+# Prepare everything else
 set NAME (basename "$SRCDIR")
 
 set PRERUN false
@@ -264,18 +90,42 @@ set POSTSCRIPT "$SRCDIR/post"
 set BUILDSCRIPT "$SRCDIR/build"
 set MANIFEST "$SRCDIR/manifest"
 
+# Set verbosity
+if arg -v
+	set chipsVerbose true
+end
+
+# Cleanup once the script exits
+function cleanup --on-process %self
+	if test "$JUSTHELPED" != true
+		echo "Cleaning Up"
+
+		# Clean up pre script if neccessary
+		if test "$PRERUN" = true -a "$POSTRUN" = false
+			runPostScript
+		end
+
+		# Clean up remaining folders
+		rm -rf $BUILDDIR
+		rm -rf $AURDIR
+		rm -rf $AURBUILDDIR
+
+		echo 'Done'
+	end
+end
+
 # Run all steps
-run "Validating Manifest" validateManifest
-run "Extracting Labels" extractLabels
-run "Setting Up rootfs" bootstrapRootFS
-run "Running pre Script" runPreScript
-run "Installing Arch Dependencies" installDepsArch
-run "Installing Aur Dependencies" installDepsAur
-run "Installing Arch Packages" installArch
-run "Installing Aur Packages" installAur
-run "Copying over rootfs" copyRootFS
-run "Running build Script" runBuildScript
-run "Running post Script" runPostScript
-run "Removing Dependencies" removeDeps
-run "Copying Manifest" copyManifest
-run "Building ACI" buildACI
+run "Validating Manifest" validateManifest; or exit
+run "Extracting Labels" extractLabels; or exit
+run "Setting Up rootfs" bootstrapRootFS; or exit
+run "Running pre Script" runPreScript; or exit
+run "Installing Arch Dependencies" installDepsArch; or exit
+run "Installing Aur Dependencies" installDepsAur; or exit
+run "Installing Arch Packages" installArch; or exit
+run "Installing Aur Packages" installAur; or exit
+run "Copying over rootfs" copyRootFS; or exit
+run "Running build Script" runBuildScript; or exit
+run "Running post Script" runPostScript; or exit
+run "Removing Dependencies" removeDeps; or exit
+run "Copying Manifest" copyManifest; or exit
+run "Building ACI" buildACI; or exit
