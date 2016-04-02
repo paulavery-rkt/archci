@@ -19,7 +19,7 @@ end
 
 # Set up fish-n-chips
 name        archci
-version     1.6.1
+version     1.6.2
 author      Florian Albertz
 copyright   2016
 
